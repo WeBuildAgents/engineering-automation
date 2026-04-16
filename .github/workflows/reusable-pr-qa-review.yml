@@ -1,0 +1,52 @@
+name: Reusable PR QA Review
+
+on:
+  workflow_call:
+    inputs:
+      slack_enabled:
+        required: false
+        type: boolean
+        default: true
+      slack_title:
+        required: false
+        type: string
+        default: "PR QA Review"
+    secrets:
+      CURSOR_API_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  qa-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Generate PR context
+        run: |
+          mkdir -p tmp
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+          git diff origin/${{ github.event.pull_request.base.ref }}...HEAD > tmp/pr.diff
+          git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD > tmp/changed-files.txt
+
+      - name: Install Cursor CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+
+      - name: Run Cursor review
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          PROMPT_FILE="$GITHUB_WORKSPACE/.github/cursor-pr-review.md"
+          cp "${{ github.workspace }}/../_actions_temp_prompt.md" /dev/null 2>/dev/null || true
