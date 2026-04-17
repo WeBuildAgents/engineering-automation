@@ -6,8 +6,9 @@ on:
 
 jobs:
   qa-review:
-    uses: YOUR_ORG/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
+    uses: veronicanegreiro-wba/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
     secrets: inherit
     with:
       slack_enabled: true
       slack_title: "PR QA Review"
+      max_diff_chars: 120000
