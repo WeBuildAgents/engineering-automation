@@ -6,7 +6,7 @@ on:
 
 jobs:
   qa-review:
-    uses: veronicanegreiro-wba/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
+    uses: WeBuildAgents/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
     secrets: inherit
     with:
       slack_enabled: true
