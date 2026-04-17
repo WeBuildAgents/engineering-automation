@@ -64,15 +64,17 @@ jobs:
           max_chars = int("${{ inputs.max_diff_chars }}")
           diff_path = Path("target-repo/tmp/pr.diff")
           content = diff_path.read_text(encoding="utf-8", errors="ignore")
+
           if len(content) > max_chars:
               content = content[:max_chars] + "\n\n[DIFF TRUNCATED]"
+
           diff_path.write_text(content, encoding="utf-8")
           PY
 
       - name: Install Cursor CLI
         run: |
           curl https://cursor.com/install -fsS | bash
-          echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
 
       - name: Run Cursor review
         env:
@@ -82,6 +84,7 @@ jobs:
           from pathlib import Path
           import subprocess
           import re
+          import textwrap
 
           prompt = Path("automation/cursor/prompts/pr-review.md").read_text(encoding="utf-8")
           files = Path("target-repo/tmp/changed-files.txt").read_text(encoding="utf-8", errors="ignore")
@@ -110,69 +113,73 @@ jobs:
           output = stdout if stdout else stderr
 
           if not output:
-              output = """## Summary
-- Change classification: UNKNOWN
-- Scope: Unable to determine because the automated review returned no output.
-- Validation posture: weak
-- Execution gate: UNKNOWN
-- Full-scope coverage gate: UNKNOWN
-- Coverage phase: N/A
+              output = textwrap.dedent("""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Unable to determine because the automated review returned no output.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
 
-## Code Quality Report
+                  ## Code Quality Report
 
-| Finding | Severity | Description | Recommendation |
-|---------|----------|-------------|----------------|
-| Empty review output | BLOCKER | Cursor returned no review output. | Re-run the review and validate the CI integration before accepting this PR. |
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Empty review output | BLOCKER | Cursor returned no review output. | Re-run the review and validate the CI integration before accepting this PR. |
 
-- Score (0–10): 0
-- Gate result: Automated review failed.
+                  - Score (0–10): 0
+                  - Gate result: Automated review failed.
 
-## Missing Tests
-- Unable to determine because review output was empty.
+                  ## Missing Tests
+                  - Unable to determine because review output was empty.
 
-## Coverage Risk
-Unknown. Automated review returned no usable output.
+                  ## Coverage Risk
+                  Unknown. Automated review returned no usable output.
 
-## Recommendations
-1. Re-run the automated review.
-2. Inspect Cursor CLI execution in CI.
-3. Do not approve the PR until a valid review is produced.
+                  ## Recommendations
+                  1. Re-run the automated review.
+                  2. Inspect Cursor CLI execution in CI.
+                  3. Do not approve the PR until a valid review is produced.
 
-## Recommendation
-BLOCK"""
+                  ## Recommendation
+                  BLOCK
+              """).strip()
 
           lower = output.lower()
           if output.lstrip().startswith("<html") or "<head>" in lower or "<body" in lower:
-              output = """## Summary
-- Change classification: UNKNOWN
-- Scope: Automated review returned HTML instead of a QA review.
-- Validation posture: weak
-- Execution gate: UNKNOWN
-- Full-scope coverage gate: UNKNOWN
-- Coverage phase: N/A
+              output = textwrap.dedent("""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Automated review returned HTML instead of a QA review.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
 
-## Code Quality Report
+                  ## Code Quality Report
 
-| Finding | Severity | Description | Recommendation |
-|---------|----------|-------------|----------------|
-| Invalid output format | BLOCKER | The review returned raw HTML instead of the required markdown review. | Fix the prompt or output handling and rerun the review before accepting this PR. |
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Invalid output format | BLOCKER | The review returned raw HTML instead of the required markdown review. | Fix the prompt or output handling and rerun the review before accepting this PR. |
 
-- Score (0–10): 0
-- Gate result: Automated review output is invalid.
+                  - Score (0–10): 0
+                  - Gate result: Automated review output is invalid.
 
-## Missing Tests
-- Unable to determine because the review output was invalid.
+                  ## Missing Tests
+                  - Unable to determine because the review output was invalid.
 
-## Coverage Risk
-Unknown. Review output failed validation.
+                  ## Coverage Risk
+                  Unknown. Review output failed validation.
 
-## Recommendations
-1. Fix the reviewer output format.
-2. Enforce markdown-only output in the prompt.
-3. Re-run the review before proceeding.
+                  ## Recommendations
+                  1. Fix the reviewer output format.
+                  2. Enforce markdown-only output in the prompt.
+                  3. Re-run the review before proceeding.
 
-## Recommendation
-BLOCK"""
+                  ## Recommendation
+                  BLOCK
+              """).strip()
 
           required = [
               "## Summary",
@@ -184,44 +191,48 @@ BLOCK"""
           ]
 
           if not all(section in output for section in required):
-              output = f"""## Summary
-- Change classification: UNKNOWN
-- Scope: Automated review completed, but the output format was invalid.
-- Validation posture: weak
-- Execution gate: UNKNOWN
-- Full-scope coverage gate: UNKNOWN
-- Coverage phase: N/A
+              output = textwrap.dedent(f"""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Automated review completed, but the output format was invalid.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
 
-## Code Quality Report
+                  ## Code Quality Report
 
-| Finding | Severity | Description | Recommendation |
-|---------|----------|-------------|----------------|
-| Invalid review structure | BLOCKER | The review did not include all required sections. | Fix the prompt/output contract and rerun the review before accepting this PR. |
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Invalid review structure | BLOCKER | The review did not include all required sections. | Fix the prompt/output contract and rerun the review before accepting this PR. |
 
-- Score (0–10): 0
-- Gate result: Automated review output is malformed.
+                  - Score (0–10): 0
+                  - Gate result: Automated review output is malformed.
 
-## Missing Tests
-- Unable to reliably determine because the review structure was invalid.
+                  ## Missing Tests
+                  - Unable to reliably determine because the review structure was invalid.
 
-## Coverage Risk
-Unknown. Output did not satisfy the required review format.
+                  ## Coverage Risk
+                  Unknown. Output did not satisfy the required review format.
 
-## Recommendations
-1. Fix the prompt so all required sections are always returned.
-2. Re-run the review.
-3. Do not approve the PR based on malformed output.
+                  ## Recommendations
+                  1. Fix the prompt so all required sections are always returned.
+                  2. Re-run the review.
+                  3. Do not approve the PR based on malformed output.
 
-## Recommendation
-BLOCK
+                  ## Recommendation
+                  BLOCK
 
-Original output:
+                  Original output:
 
-{output}
-"""
+                  {output}
+              """).strip()
 
-          # Normalize final recommendation
-          match = re.search(r"## Recommendation\s*\n\s*(APPROVE|NEEDS TESTS|BLOCK)\b", output, re.IGNORECASE)
+          match = re.search(
+              r"## Recommendation\s*\n\s*(APPROVE|NEEDS TESTS|BLOCK)\b",
+              output,
+              re.IGNORECASE
+          )
           recommendation = match.group(1).upper() if match else "BLOCK"
 
           Path("qa-review.md").write_text(output, encoding="utf-8")
