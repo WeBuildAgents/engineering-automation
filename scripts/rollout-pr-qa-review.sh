@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ORG="veronicanegreiro-wba"
+ORG="WeBuildAgents"
 AUTOMATION_REPO="engineering-automation"
 AUTOMATION_WORKFLOW_REF="main"
 ROLLOUT_BRANCH="chore/add-pr-qa-review"
