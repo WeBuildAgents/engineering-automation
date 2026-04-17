@@ -44,7 +44,7 @@ jobs:
       - name: Checkout automation repo
         uses: actions/checkout@v4
         with:
-          repository: veronicanegreiro-wba/engineering-automation
+          repository: WeBuildAgents/engineering-automation
           ref: main
           path: automation
 
