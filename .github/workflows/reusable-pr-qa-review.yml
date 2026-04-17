@@ -52,9 +52,14 @@ jobs:
         working-directory: target-repo
         run: |
           mkdir -p tmp
-          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-          git diff origin/${{ github.event.pull_request.base.ref }}...HEAD > tmp/pr.diff
-          git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD > tmp/changed-files.txt
+
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          git fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" --depth=50
+
+          git diff "origin/${BASE_REF}...${HEAD_SHA}" > tmp/pr.diff
+          git diff --name-only "origin/${BASE_REF}...${HEAD_SHA}" > tmp/changed-files.txt
 
       - name: Trim diff if needed
         run: |
@@ -261,7 +266,7 @@ jobs:
             });
 
       - name: Send summary to Slack
-        if: ${{ inputs.slack_enabled }}
+        if: ${{ inputs.slack_enabled && secrets.SLACK_WEBHOOK_URL != '' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
@@ -271,13 +276,9 @@ jobs:
           from pathlib import Path
           import urllib.request
 
-          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
-          if not webhook_url:
-              print("SLACK_WEBHOOK_URL is not configured. Skipping Slack notification.")
-              exit(0)
-
           review = Path("qa-review.md").read_text(encoding="utf-8")
           recommendation = Path("qa-review-result.txt").read_text(encoding="utf-8").strip()
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"]
 
           payload = {
               "text": (
