@@ -266,7 +266,7 @@ jobs:
             });
 
       - name: Send summary to Slack
-        if: ${{ inputs.slack_enabled && secrets.SLACK_WEBHOOK_URL != '' }}
+        if: ${{ inputs.slack_enabled }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
@@ -276,9 +276,13 @@ jobs:
           from pathlib import Path
           import urllib.request
 
+          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("SLACK_WEBHOOK_URL is not configured. Skipping Slack notification.")
+              exit(0)
+
           review = Path("qa-review.md").read_text(encoding="utf-8")
           recommendation = Path("qa-review-result.txt").read_text(encoding="utf-8").strip()
-          webhook_url = os.environ["SLACK_WEBHOOK_URL"]
 
           payload = {
               "text": (
