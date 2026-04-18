@@ -1,0 +1,279 @@
+Step-by-Step Guide: Enabling PR QA Review on Other Repositories
+Prerequisites
+Before enabling the workflow on other repositories, ensure:
+
+✅ Central automation repository is configured:
+
+Repository: WeBuildAgents/engineering-automation
+File: .github/workflows/reusable-pr-qa-review.yml (with --trust flag fix applied)
+File: cursor/prompts/pr-review.md
+Both committed to main branch
+
+
+✅ Secrets are configured at organization or repository level:
+
+CURSOR_API_KEY (required)
+SLACK_WEBHOOK_URL (optional)
+
+
+✅ GitHub CLI installed (for automated rollout):
+
+bash   # Install gh CLI if needed
+   brew install gh  # macOS
+   # or visit https://cli.github.com/
+   
+   # Authenticate
+   gh auth login
+
+Option 1: Automated Mass Deployment (Recommended)
+Use the rollout script to deploy to multiple repositories automatically.
+Step 1: Configure the Rollout Script
+Edit scripts/rollout-pr-qa-review.sh:
+bash# Repositories to skip (will NOT receive the workflow)
+SKIP_REPOS=(
+  "engineering-automation"  # Skip the automation repo itself
+  "private-repo"            # Add any repos you want to skip
+)
+
+# Optional: Only deploy to specific repos (leave empty to deploy to all)
+ALLOWLIST_REPOS=(
+  # "openclaw-global-skills"
+  # "openclaw-vps-setup"
+)
+Step 2: Run the Rollout Script
+bash# Clone the automation repository
+git clone https://github.com/WeBuildAgents/engineering-automation.git
+cd engineering-automation
+
+# Make the script executable
+chmod +x scripts/rollout-pr-qa-review.sh
+
+# Run the rollout
+./scripts/rollout-pr-qa-review.sh
+Step 3: What the Script Does
+The script will automatically:
+
+✅ List all repositories in the WeBuildAgents organization
+✅ Skip repositories in the SKIP_REPOS list
+✅ Clone each repository
+✅ Create a new branch: chore/add-pr-qa-review
+✅ Add the workflow file: .github/workflows/pr-qa-review.yml
+✅ Commit and push the changes
+✅ Create a PR with description
+✅ Move to the next repository
+
+Step 4: Review and Merge PRs
+
+Go to each repository in GitHub
+Review the automatically created PR titled: "chore: add reusable PR QA review workflow"
+Verify the workflow file looks correct
+Merge the PR
+
+Example PR created by script:
+Title: chore: add reusable PR QA review workflow
+
+Body:
+## Summary
+This PR adds the reusable PR QA review workflow wrapper.
+
+## Changes
+- adds `.github/workflows/pr-qa-review.yml`
+- wires the repository to the centralized reusable workflow in `WeBuildAgents/engineering-automation`
+
+## Notes
+- review logic is centralized
+- secrets are inherited from organization/repository configuration
+
+Option 2: Manual Deployment (Individual Repositories)
+Use this for enabling the workflow on a single repository manually.
+Step 1: Navigate to Target Repository
+bashcd /path/to/your/repository
+# Example: cd ~/projects/openclaw-global-skills
+Step 2: Create Workflow Branch
+bashgit checkout main
+git pull origin main
+git checkout -b chore/add-pr-qa-review
+Step 3: Create Workflow Directory
+bashmkdir -p .github/workflows
+Step 4: Create Workflow File
+Create .github/workflows/pr-qa-review.yml with this content:
+yamlname: PR QA Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  qa-review:
+    uses: WeBuildAgents/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
+    secrets: inherit
+    with:
+      slack_enabled: true
+      slack_title: "PR QA Review"
+      max_diff_chars: 120000
+      fail_on_block: true
+Step 5: Commit and Push
+bashgit add .github/workflows/pr-qa-review.yml
+git commit -m "chore: add reusable PR QA review workflow"
+git push -u origin chore/add-pr-qa-review
+Step 6: Create Pull Request
+bash# Using GitHub CLI
+gh pr create \
+  --title "chore: add reusable PR QA review workflow" \
+  --body "Adds automated PR QA review using centralized workflow from engineering-automation"
+
+# Or manually create PR on GitHub web interface
+Step 7: Merge the PR
+Once reviewed, merge the PR to enable the workflow.
+
+Verification Steps
+After deploying (automated or manual), verify the workflow is working:
+1. Create a Test PR
+bash# In the target repository
+git checkout -b test/verify-qa-review
+echo "# Test change" >> README.md
+git add README.md
+git commit -m "test: verify QA review workflow"
+git push -u origin test/verify-qa-review
+2. Create PR on GitHub
+bashgh pr create --title "test: verify QA review" --body "Testing automated review"
+3. Check Workflow Execution
+
+Go to the PR on GitHub
+Navigate to "Checks" tab
+Verify "qa-review / qa-review" appears
+Wait for workflow to complete (~2-5 minutes)
+
+4. Verify Review Comment
+
+Check the PR "Conversation" tab
+Verify a comment appears with:
+
+✅ ## Summary
+✅ ## Code Quality Report
+✅ ## Missing Tests
+✅ ## Coverage Risk
+✅ ## Recommendations
+✅ ## Recommendation (APPROVE/NEEDS TESTS/BLOCK)
+
+
+
+5. Verify Slack Notification (if enabled)
+
+Check your configured Slack channel
+Verify message appears with:
+
+Repository name
+PR number
+Final recommendation
+Review summary
+
+
+
+6. Verify Workflow Behavior
+
+If recommendation is APPROVE: Workflow passes ✅
+If recommendation is NEEDS TESTS: Workflow passes ✅ (warning only)
+If recommendation is BLOCK: Workflow fails ❌ (prevents merge)
+
+
+Configuration Options
+You can customize the workflow per repository by editing .github/workflows/pr-qa-review.yml:
+Disable Slack Notifications
+yamlwith:
+  slack_enabled: false  # ← Change to false
+Allow Merge Even on BLOCK
+yamlwith:
+  fail_on_block: false  # ← Change to false (workflow will warn but not fail)
+Adjust Diff Size Limit
+yamlwith:
+  max_diff_chars: 200000  # ← Increase for larger PRs
+Custom Slack Title
+yamlwith:
+  slack_title: "OpenClaw PR Review"  # ← Custom title
+
+Troubleshooting
+Issue: Workflow doesn't trigger
+Solution:
+
+Check .github/workflows/pr-qa-review.yml exists in main branch
+Verify PR event types: [opened, synchronize, reopened]
+Check GitHub Actions is enabled: Settings → Actions → General
+
+Issue: "Unrecognized named-value: 'secrets'" error
+Solution:
+
+Ensure reusable-pr-qa-review.yml in engineering-automation has the Slack fix applied (removing secrets.SLACK_WEBHOOK_URL from if condition)
+
+Issue: Review comment not posted
+Solution:
+
+Check workflow logs for errors
+Verify pull-requests: write permission is granted
+Ensure Cursor CLI installed successfully (check "Install Cursor CLI" step)
+
+Issue: "Workspace Trust Required" error
+Solution:
+
+Ensure reusable-pr-qa-review.yml uses --trust flag:
+
+python  ["cursor-agent", "--trust", "-p", full_prompt]
+Issue: Missing CURSOR_API_KEY
+Solution:
+
+Go to organization settings: https://github.com/organizations/WeBuildAgents/settings/secrets/actions
+Add CURSOR_API_KEY secret
+Or add at repository level: Repository → Settings → Secrets and variables → Actions
+
+Issue: Slack notification not sent
+Solution:
+
+Verify SLACK_WEBHOOK_URL secret exists
+Check slack_enabled: true in workflow
+Test webhook URL manually:
+
+bash   curl -X POST -H 'Content-type: application/json' \
+     --data '{"text":"Test message"}' \
+     YOUR_SLACK_WEBHOOK_URL
+
+Quick Reference Commands
+bash# Automated rollout to all repos
+./scripts/rollout-pr-qa-review.sh
+
+# Manual deployment to one repo
+cd your-repo
+git checkout -b chore/add-pr-qa-review
+mkdir -p .github/workflows
+# Create .github/workflows/pr-qa-review.yml
+git add .github/workflows/pr-qa-review.yml
+git commit -m "chore: add PR QA review workflow"
+git push -u origin chore/add-pr-qa-review
+gh pr create --title "chore: add PR QA review workflow"
+
+# Test the workflow
+git checkout -b test/verify-qa-review
+echo "test" >> README.md
+git add . && git commit -m "test: verify workflow"
+git push -u origin test/verify-qa-review
+gh pr create --title "test: verify workflow"
+
+Summary
+Automated Approach (Recommended):
+
+Configure SKIP_REPOS and ALLOWLIST_REPOS in rollout script
+Run ./scripts/rollout-pr-qa-review.sh
+Review and merge auto-created PRs in each repository
+
+Manual Approach:
+
+Create workflow file .github/workflows/pr-qa-review.yml in target repo
+Commit, push, and create PR
+Merge PR to enable workflow
+
+Both approaches result in:
+
+✅ Automatic PR reviews on every pull request
+✅ Detailed code quality reports with severity levels
+✅ Test coverage analysis and recommendations
+✅ Slack notifications (if configured)
+✅ Workflow blocking on critical issues (if enabled)
