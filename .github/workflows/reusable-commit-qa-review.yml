@@ -342,7 +342,7 @@ jobs:
 
           payload = {
               "text": (
-                  f"*${{ inputs.slack_title }}*\n"
+                  f"<!channel> *${{ inputs.slack_title }}*\n"
                   f"Repository: ${{ github.repository }}\n"
                   f"Commit: `${{ github.sha }}`\n"
                   f"Branch: `${{ github.ref_name }}`\n"
