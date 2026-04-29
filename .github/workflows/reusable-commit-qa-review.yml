@@ -1,0 +1,370 @@
+name: Reusable Commit QA Review
+
+on:
+  workflow_call:
+    inputs:
+      slack_enabled:
+        required: false
+        type: boolean
+        default: true
+      slack_title:
+        required: false
+        type: string
+        default: "Commit QA Review"
+      max_diff_chars:
+        required: false
+        type: number
+        default: 120000
+      fail_on_block:
+        required: false
+        type: boolean
+        default: false
+      skip_if_pr_open:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      CURSOR_API_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commit-qa-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check if commit belongs to an open PR
+        id: pr-check
+        if: ${{ inputs.skip_if_pr_open }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ github.repository }}"
+
+          PR_COUNT=$(gh pr list \
+            --repo "$REPO" \
+            --state open \
+            --json commits \
+            --jq "[.[] | select(.commits[].oid == \"$SHA\")] | length")
+
+          if [[ "$PR_COUNT" -gt 0 ]]; then
+            echo "Commit $SHA belongs to an open PR. Skipping commit review to avoid duplication."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.pr-check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          path: target-repo
+
+      - name: Checkout automation repo
+        if: steps.pr-check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: WeBuildAgents/engineering-automation
+          ref: main
+          path: automation
+
+      - name: Generate commit diff context
+        if: steps.pr-check.outputs.skip != 'true'
+        working-directory: target-repo
+        run: |
+          mkdir -p tmp
+
+          BEFORE_SHA="${{ github.event.before }}"
+          AFTER_SHA="${{ github.sha }}"
+          ZERO_SHA="0000000000000000000000000000000000000000"
+
+          if [[ "$BEFORE_SHA" == "$ZERO_SHA" ]]; then
+            # New branch: diff against the merge-base with the default branch
+            DEFAULT_BRANCH=$(git remote show origin | awk '/HEAD branch/ {print $NF}')
+            git fetch origin "$DEFAULT_BRANCH" --depth=50
+            MERGE_BASE=$(git merge-base "origin/$DEFAULT_BRANCH" "$AFTER_SHA" 2>/dev/null || echo "")
+
+            if [[ -z "$MERGE_BASE" ]]; then
+              # Fallback: diff only the last commit
+              git diff HEAD~1 HEAD > tmp/commit.diff 2>/dev/null || git show HEAD > tmp/commit.diff
+            else
+              git diff "$MERGE_BASE" "$AFTER_SHA" > tmp/commit.diff
+            fi
+          else
+            git diff "$BEFORE_SHA" "$AFTER_SHA" > tmp/commit.diff
+          fi
+
+          git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" > tmp/changed-files.txt 2>/dev/null \
+            || git show --name-only --pretty=format: HEAD > tmp/changed-files.txt
+
+          # Store commit metadata for context
+          git log -1 --pretty=format:"Author: %an <%ae>%nDate: %ad%nMessage: %s" > tmp/commit-meta.txt
+
+      - name: Trim diff if needed
+        if: steps.pr-check.outputs.skip != 'true'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          max_chars = int("${{ inputs.max_diff_chars }}")
+          diff_path = Path("target-repo/tmp/commit.diff")
+          content = diff_path.read_text(encoding="utf-8", errors="ignore")
+
+          if len(content) > max_chars:
+              content = content[:max_chars] + "\n\n[DIFF TRUNCATED]"
+
+          diff_path.write_text(content, encoding="utf-8")
+          PY
+
+      - name: Install Cursor CLI
+        if: steps.pr-check.outputs.skip != 'true'
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
+
+      - name: Run Cursor review
+        if: steps.pr-check.outputs.skip != 'true'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import re
+          import textwrap
+
+          prompt = Path("automation/cursor/prompts/pr-review.md").read_text(encoding="utf-8")
+          files   = Path("target-repo/tmp/changed-files.txt").read_text(encoding="utf-8", errors="ignore")
+          diff_   = Path("target-repo/tmp/commit.diff").read_text(encoding="utf-8", errors="ignore")
+          meta    = Path("target-repo/tmp/commit-meta.txt").read_text(encoding="utf-8", errors="ignore")
+
+          full_prompt = f"""{prompt}
+
+          Repository: ${{ github.repository }}
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+
+          {meta}
+
+          Changed files:
+          {files}
+
+          Diff:
+          {diff_}
+          """
+
+          result = subprocess.run(
+              ["cursor-agent", "--trust", "-p", full_prompt],
+              capture_output=True,
+              text=True
+          )
+
+          stdout = (result.stdout or "").strip()
+          stderr = (result.stderr or "").strip()
+          output = stdout if stdout else stderr
+
+          if not output:
+              output = textwrap.dedent("""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Unable to determine because the automated review returned no output.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
+
+                  ## Code Quality Report
+
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Empty review output | BLOCKER | Cursor returned no review output. | Re-run the review and validate the CI integration before accepting this commit. |
+
+                  - Score (0–10): 0
+                  - Gate result: Automated review failed.
+
+                  ## Missing Tests
+                  - Unable to determine because review output was empty.
+
+                  ## Coverage Risk
+                  Unknown. Automated review returned no usable output.
+
+                  ## Recommendations
+                  1. Re-run the automated review.
+                  2. Inspect Cursor CLI execution in CI.
+                  3. Do not accept changes based on missing review output.
+
+                  ## Recommendation
+                  BLOCK
+              """).strip()
+
+          lower = output.lower()
+          if output.lstrip().startswith("<html") or "<head>" in lower or "<body" in lower:
+              output = textwrap.dedent("""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Automated review returned HTML instead of a QA review.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
+
+                  ## Code Quality Report
+
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Invalid output format | BLOCKER | The review returned raw HTML instead of the required markdown review. | Fix the prompt or output handling and rerun the review. |
+
+                  - Score (0–10): 0
+                  - Gate result: Automated review output is invalid.
+
+                  ## Missing Tests
+                  - Unable to determine because the review output was invalid.
+
+                  ## Coverage Risk
+                  Unknown. Review output failed validation.
+
+                  ## Recommendations
+                  1. Fix the reviewer output format.
+                  2. Enforce markdown-only output in the prompt.
+                  3. Re-run the review before proceeding.
+
+                  ## Recommendation
+                  BLOCK
+              """).strip()
+
+          required = [
+              "## Summary",
+              "## Code Quality Report",
+              "## Missing Tests",
+              "## Coverage Risk",
+              "## Recommendations",
+              "## Recommendation",
+          ]
+
+          if not all(section in output for section in required):
+              output = textwrap.dedent(f"""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Scope: Automated review completed, but the output format was invalid.
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
+
+                  ## Code Quality Report
+
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | Invalid review structure | BLOCKER | The review did not include all required sections. | Fix the prompt/output contract and rerun the review. |
+
+                  - Score (0–10): 0
+                  - Gate result: Automated review output is malformed.
+
+                  ## Missing Tests
+                  - Unable to reliably determine because the review structure was invalid.
+
+                  ## Coverage Risk
+                  Unknown. Output did not satisfy the required review format.
+
+                  ## Recommendations
+                  1. Fix the prompt so all required sections are always returned.
+                  2. Re-run the review.
+                  3. Do not accept the commit based on malformed output.
+
+                  ## Recommendation
+                  BLOCK
+
+                  Original output:
+
+                  {output}
+              """).strip()
+
+          match = re.search(
+              r"## Recommendation\s*\n\s*(APPROVE|NEEDS TESTS|BLOCK)\b",
+              output,
+              re.IGNORECASE
+          )
+          recommendation = match.group(1).upper() if match else "BLOCK"
+
+          Path("commit-qa-review.md").write_text(output, encoding="utf-8")
+          Path("commit-qa-review-result.txt").write_text(recommendation, encoding="utf-8")
+          PY
+
+      - name: Upload review artifact
+        if: steps.pr-check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit-qa-review
+          path: |
+            commit-qa-review.md
+            commit-qa-review-result.txt
+
+      - name: Post review as commit comment
+        if: steps.pr-check.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('commit-qa-review.md', 'utf8');
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body
+            });
+
+      - name: Send summary to Slack
+        if: ${{ inputs.slack_enabled && steps.pr-check.outputs.skip != 'true' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import urllib.request
+
+          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("SLACK_WEBHOOK_URL is not configured. Skipping Slack notification.")
+              exit(0)
+
+          review        = Path("commit-qa-review.md").read_text(encoding="utf-8")
+          recommendation = Path("commit-qa-review-result.txt").read_text(encoding="utf-8").strip()
+
+          payload = {
+              "text": (
+                  f"*${{ inputs.slack_title }}*\n"
+                  f"Repository: ${{ github.repository }}\n"
+                  f"Commit: `${{ github.sha }}`\n"
+                  f"Branch: `${{ github.ref_name }}`\n"
+                  f"Final recommendation: {recommendation}\n\n"
+                  f"{review[:3200]}"
+              )
+          }
+
+          req = urllib.request.Request(
+              webhook_url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          urllib.request.urlopen(req).read()
+          PY
+
+      - name: Fail workflow on BLOCK
+        if: ${{ inputs.fail_on_block && steps.pr-check.outputs.skip != 'true' }}
+        run: |
+          RESULT="$(cat commit-qa-review-result.txt)"
+          if [ "$RESULT" = "BLOCK" ]; then
+            echo "Final recommendation is BLOCK. Failing workflow."
+            exit 1
+          fi
