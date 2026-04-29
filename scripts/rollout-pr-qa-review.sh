@@ -4,10 +4,8 @@ set -euo pipefail
 ORG="WeBuildAgents"
 AUTOMATION_REPO="engineering-automation"
 AUTOMATION_WORKFLOW_REF="main"
-ROLLOUT_BRANCH="chore/add-pr-qa-review"
-WORKFLOW_FILE_PATH=".github/workflows/pr-qa-review.yml"
+ROLLOUT_BRANCH="chore/add-qa-review-workflows"
 BASE_SLACK_ENABLED="true"
-BASE_SLACK_TITLE="PR QA Review"
 
 SKIP_REPOS=(
   "$AUTOMATION_REPO"
@@ -17,6 +15,9 @@ ALLOWLIST_REPOS=(
   # "repo-one"
   # "repo-two"
 )
+
+PR_WORKFLOW_FILE_PATH=".github/workflows/pr-qa-review.yml"
+COMMIT_WORKFLOW_FILE_PATH=".github/workflows/commit-qa-review.yml"
 
 contains_element() {
   local seeking="$1"
@@ -45,7 +46,7 @@ should_process_repo() {
   return 0
 }
 
-create_workflow_file() {
+create_pr_workflow_file() {
   local target_file="$1"
 
   mkdir -p "$(dirname "$target_file")"
@@ -57,14 +58,49 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   qa-review:
     uses: ${ORG}/${AUTOMATION_REPO}/.github/workflows/reusable-pr-qa-review.yml@${AUTOMATION_WORKFLOW_REF}
     secrets: inherit
     with:
       slack_enabled: ${BASE_SLACK_ENABLED}
-      slack_title: "${BASE_SLACK_TITLE}"
+      slack_title: "PR QA Review"
       max_diff_chars: 120000
+      fail_on_block: true
+EOF
+}
+
+create_commit_workflow_file() {
+  local target_file="$1"
+
+  mkdir -p "$(dirname "$target_file")"
+
+  cat > "$target_file" <<EOF
+name: Commit QA Review
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commit-review:
+    uses: ${ORG}/${AUTOMATION_REPO}/.github/workflows/reusable-commit-qa-review.yml@${AUTOMATION_WORKFLOW_REF}
+    secrets: inherit
+    with:
+      slack_enabled: ${BASE_SLACK_ENABLED}
+      slack_title: "Commit QA Review"
+      max_diff_chars: 120000
+      fail_on_block: false
+      skip_if_pr_open: true
 EOF
 }
 
@@ -110,29 +146,55 @@ for REPO in "${REPOS[@]}"; do
 
   git checkout -b "$ROLLOUT_BRANCH"
 
-  if [[ -f "$WORKFLOW_FILE_PATH" ]]; then
-    echo "${WORKFLOW_FILE_PATH} already exists in ${FULL_REPO}. Skipping to avoid overwrite."
+  PR_ADDED=false
+  COMMIT_ADDED=false
+
+  if [[ -f "$PR_WORKFLOW_FILE_PATH" ]]; then
+    echo "${PR_WORKFLOW_FILE_PATH} already exists in ${FULL_REPO}. Skipping PR workflow."
+  else
+    create_pr_workflow_file "$PR_WORKFLOW_FILE_PATH"
+    git add "$PR_WORKFLOW_FILE_PATH"
+    PR_ADDED=true
+  fi
+
+  if [[ -f "$COMMIT_WORKFLOW_FILE_PATH" ]]; then
+    echo "${COMMIT_WORKFLOW_FILE_PATH} already exists in ${FULL_REPO}. Skipping commit workflow."
+  else
+    create_commit_workflow_file "$COMMIT_WORKFLOW_FILE_PATH"
+    git add "$COMMIT_WORKFLOW_FILE_PATH"
+    COMMIT_ADDED=true
+  fi
+
+  if [[ "$PR_ADDED" == "false" && "$COMMIT_ADDED" == "false" ]]; then
+    echo "Nothing to add for ${FULL_REPO}. Skipping."
     cd "$WORKDIR"
     continue
   fi
 
-  create_workflow_file "$WORKFLOW_FILE_PATH"
+  CHANGES_DESCRIPTION=""
+  if [[ "$PR_ADDED" == "true" ]]; then
+    CHANGES_DESCRIPTION+="- adds \`${PR_WORKFLOW_FILE_PATH}\`\n"
+  fi
+  if [[ "$COMMIT_ADDED" == "true" ]]; then
+    CHANGES_DESCRIPTION+="- adds \`${COMMIT_WORKFLOW_FILE_PATH}\`\n"
+  fi
 
-  git add "$WORKFLOW_FILE_PATH"
-  git commit -m "chore: add reusable PR QA review workflow"
+  git commit -m "chore: add QA review workflows (PR and commit)"
   git push -u origin "$ROLLOUT_BRANCH"
 
   PR_BODY=$(cat <<EOF
 ## Summary
-This PR adds the reusable PR QA review workflow wrapper.
+This PR adds the QA review workflows for PRs and individual commits.
 
 ## Changes
-- adds \`${WORKFLOW_FILE_PATH}\`
-- wires the repository to the centralized reusable workflow in \`${ORG}/${AUTOMATION_REPO}\`
+$(echo -e "$CHANGES_DESCRIPTION")
+- wires the repository to the centralized reusable workflows in \`${ORG}/${AUTOMATION_REPO}\`
 
 ## Notes
-- review logic is centralized
-- secrets are inherited from organization/repository configuration
+- PR review runs on \`pull_request\` events and blocks merge on BLOCK
+- Commit review runs on every \`push\` and skips automatically when the commit belongs to an open PR (avoids duplication)
+- Review logic is centralized in the automation repo
+- Secrets are inherited from organization/repository configuration
 EOF
 )
 
@@ -140,7 +202,7 @@ EOF
     --repo "$FULL_REPO" \
     --base "$DEFAULT_BRANCH" \
     --head "$ROLLOUT_BRANCH" \
-    --title "chore: add reusable PR QA review workflow" \
+    --title "chore: add QA review workflows (PR and commit)" \
     --body "$PR_BODY"
 
   cd "$WORKDIR"
