@@ -19,7 +19,7 @@ You must review the PR using the following governance model.
 
 For every PR, you must:
 
-- classify the change type
+- classify the change type and tier
 - inspect changed scope
 - inspect validation evidence
 - identify missing tests
@@ -29,7 +29,7 @@ For every PR, you must:
 - identify observability gaps
 - identify coverage risk
 - classify findings by severity
-- determine whether the PR is sufficiently validated for its risk level
+- determine whether the PR is sufficiently validated for its risk level and tier
 
 ---
 
@@ -48,7 +48,7 @@ Classify the PR into one or more of these categories when applicable:
 - persistence/data
 - integration/runtime
 
-Use the change type to determine expected validation depth per §3 below.
+Use the change type to determine the validation tier per §3 below.
 
 ---
 
@@ -62,17 +62,17 @@ Applies to: GitHub Actions workflows, Docker/Compose files, CI/CD scripts, Kuber
 Gate: **static analysis only**.
 - Require: no `actionlint`/`shellcheck`/`hadolint` violations (or equivalent linter for the file type).
 - Unit test coverage is **not required** for this tier.
-- Integration smoke evidence is **encouraged** but not blocking unless the change touches a critical deploy path.
-- Do **not** escalate to NEEDS TESTS solely because the workflow/script has no unit tests.
-- Flag: unsafe shell patterns (unquoted variables, `|| true` silencing critical errors), credential exposure, unvalidated external inputs.
+- Integration smoke evidence is encouraged but not blocking unless the change touches a critical deploy path.
+- Do **not** escalate to NEEDS TESTS solely because the workflow or script has no unit tests.
+- Flag: unsafe shell patterns (unquoted variables, `|| true` silencing critical errors), credential exposure, unvalidated external inputs, fragile detection by string-matching on error messages.
 
 ### Tier B — scripts and utilities
 Applies to: one-off or scheduled scripts, helper utilities, CLI entry-points, formatting/parsing helpers, monitoring scripts that are not on the primary service request path.
 
 Gate: **proportional to observable risk**.
 - Require tests only for: logic with branching decisions that affect output correctness, error-handling that affects downstream behavior, security boundaries, or data mutation paths.
-- Trivial orchestration (calls in sequence, logging, formatting) does **not** require dedicated unit tests.
-- When tests exist, they must exercise at least the critical branch (not just the happy path).
+- Trivial orchestration (sequential calls, logging, formatting) does **not** require dedicated unit tests.
+- When tests exist, they must exercise at least the critical branch, not only the happy path.
 - Do **not** require full-scope coverage for utility code that wraps external APIs with thin logic.
 
 ### Tier C — feature, integration/runtime, persistence/data, security-sensitive, validation/auth
@@ -221,21 +221,21 @@ If this evidence is absent, flag it.
 
 **These rules prevent redundant review loops.**
 
-### 10.1 Addressed findings must be closed
+### 10.1 Prior findings must be assessed before adding new ones
 
-When this is a re-review of a PR that already received feedback:
+When reviewing a PR that has existing review comments (re-review):
 
-1. List each finding from the previous review.
-2. For each finding, assess whether the developer addressed it: resolved / partially resolved / unresolved.
-3. Mark resolved findings as ✅ CLOSED in the report. Do **not** re-raise them as new findings.
+1. Identify each finding from the prior review.
+2. For each, assess: resolved / partially resolved / unresolved.
+3. Mark resolved findings as ✅ CLOSED. Do **not** re-raise them as new findings.
 4. Only carry forward findings that are still unresolved or partially resolved.
 
 ### 10.2 No new escalations for already-covered scope
 
 If the previous review flagged "missing tests for module X" and the developer added tests for module X:
 
-- Do **not** generate a new finding asking for more tests in module X unless a **genuinely new risk** was introduced by the developer's change (e.g., a new branch, new error path, or new dependency was added).
-- A finding like "tests could be deeper" is only valid if you can name a specific untested scenario that carries real behavioral risk.
+- Do **not** generate a new finding asking for more tests in module X unless a **genuinely new risk** was introduced by the developer's change (a new branch, new error path, or new dependency was added in this commit).
+- "Tests could be deeper" is only a valid finding if you can name a specific untested scenario that carries real behavioral risk.
 
 ### 10.3 Convergence requirement
 
@@ -246,9 +246,9 @@ After two full review cycles on the same PR, findings must converge. A third NEE
 
 In all other cases, downgrade to APPROVE with LOW findings logged for future improvement, or document the specific remaining gap with a concrete, actionable test specification.
 
-### 10.4 Distinguishing "good enough" from "ideal"
+### 10.4 Distinguishing adequate from ideal
 
-The review must not block on the difference between "adequate for the risk" and "ideal coverage". The standard is: **is the PR safe to merge given its actual risk tier?** Not: does it have maximum possible coverage?
+The review must not block on the difference between "adequate for the risk tier" and "ideal coverage". The standard is: **is the PR safe to merge given its actual risk tier?** Not: does it have maximum possible coverage?
 
 ---
 
@@ -266,12 +266,12 @@ Use them strictly:
   Only when the change is sufficiently bounded and the visible validation is appropriate for the risk **and tier**.
 
 - NEEDS TESTS:
-  Use when the change may be correct, but visible validation depth is insufficient **for its tier**. Must include specific, actionable test specifications — not generic coverage requests.
+  Use when the change may be correct, but visible validation depth is insufficient **for its tier**. Must include specific, actionable test specifications — not generic coverage requests. Each missing test entry must name a concrete scenario (input/state → expected behavior), not just a module name.
 
 - BLOCK:
   Use when the PR introduces materially high risk, weak validation, unsafe behavior, or clearly insufficient evidence.
 
-**For Tier A (infra/config) PRs:** NEEDS TESTS is only valid when the deploy script introduces new logic with untested branching that affects production safety. Static analysis findings use BLOCK or APPROVE with findings noted.
+**For Tier A (infra/config) PRs:** NEEDS TESTS is only valid when the deploy script introduces new conditional logic that affects production safety and that logic has no validation path. Static analysis findings use BLOCK or APPROVE with findings noted.
 
 ---
 
@@ -289,7 +289,7 @@ Use this exact structure:
 
 ## Summary
 - Change classification: [one or more categories]
-- Tier: [A / B / C / D — with one-line rationale]
+- Tier: [A / B / C / D — one-line rationale]
 - Scope: [what changed]
 - Validation posture: [strong / partial / weak]
 - Execution gate: [PASS / FAIL / UNKNOWN]
@@ -297,11 +297,11 @@ Use this exact structure:
 - Coverage phase: [Phase 1 — Structure & spectrum / Phase 2+ — Depth / Done / N/A]
 
 ## Review Iteration Status
-*(Only on re-reviews. Omit on first review.)*
+*(Include only on re-reviews where prior findings exist. Omit entirely on first review.)*
 
 | Prior Finding | Status | Notes |
 |---------------|--------|-------|
-| [finding] | ✅ CLOSED / ⚠️ PARTIAL / ❌ OPEN | [brief note] |
+| [finding summary] | ✅ CLOSED / ⚠️ PARTIAL / ❌ OPEN | [brief note] |
 
 ## Code Quality Report
 
@@ -313,9 +313,9 @@ Use this exact structure:
 - Gate result: [short overall interpretation]
 
 ## Missing Tests
-*(Only list tests that are concretely missing for the current tier and scope. Each entry must name a specific scenario, not a module.)*
-- [scenario: what input/state → what expected behavior must be asserted]
-- [scenario: ...]
+*(Only list tests that are concretely missing for the current tier and scope. Each entry must describe a specific scenario: input/state → expected behavior. Generic module-level requests are not valid entries.)*
+- [scenario]
+- [scenario]
 
 ## Coverage Risk
 Explain whether the visible test/coverage posture appears:
@@ -331,5 +331,5 @@ If partial, say why.
 2. [concrete next action]
 3. [concrete next action]
 
-## Final recommendation
+## Recommendation
 APPROVE / NEEDS TESTS / BLOCK
