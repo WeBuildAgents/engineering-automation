@@ -141,28 +141,44 @@ jobs:
           import re
           import textwrap
 
-          prompt = Path("automation/cursor/prompts/pr-review.md").read_text(encoding="utf-8")
-          files   = Path("target-repo/tmp/changed-files.txt").read_text(encoding="utf-8", errors="ignore")
-          diff_   = Path("target-repo/tmp/commit.diff").read_text(encoding="utf-8", errors="ignore")
-          meta    = Path("target-repo/tmp/commit-meta.txt").read_text(encoding="utf-8", errors="ignore")
+          # Resolve absolute paths so cursor-agent finds them regardless of cwd.
+          # The driver prompt below references these files instead of embedding
+          # their contents inline. The agent reads them via tool calls (per the
+          # Cursor CLI headless docs). This keeps argv well under Linux's
+          # MAX_ARG_STRLEN (~128 KB) and removes the OSError [Errno 7] failure
+          # mode on large diffs / prompts.
+          prompt_path = Path("automation/cursor/prompts/pr-review.md").resolve()
+          files_path = Path("target-repo/tmp/changed-files.txt").resolve()
+          diff_path = Path("target-repo/tmp/commit.diff").resolve()
+          meta_path = Path("target-repo/tmp/commit-meta.txt").resolve()
 
-          full_prompt = f"""{prompt}
+          driver_prompt = textwrap.dedent(f"""
+              You are running an automated commit QA review.
 
-          Repository: ${{ github.repository }}
-          Commit: ${{ github.sha }}
-          Branch: ${{ github.ref_name }}
+              Use file-reading tools to read the following files from disk, in order:
 
-          {meta}
+              Step 1. Read the full review instructions and follow them strictly:
+                  {prompt_path}
 
-          Changed files:
-          {files}
+              Step 2. Read the commit metadata (author, date, message):
+                  {meta_path}
 
-          Diff:
-          {diff_}
-          """
+              Step 3. Read the list of changed files in this commit:
+                  {files_path}
+
+              Step 4. Read the unified diff for this commit:
+                  {diff_path}
+
+              Repository: ${{ github.repository }}
+              Commit: ${{ github.sha }}
+              Branch: ${{ github.ref_name }}
+
+              Output ONLY the markdown review described by the instructions in step 1.
+              Do not include any preamble, raw HTML, or code fences wrapping the entire response.
+          """).strip()
 
           result = subprocess.run(
-              ["cursor-agent", "--trust", "-p", full_prompt],
+              ["cursor-agent", "--trust", "-p", driver_prompt],
               capture_output=True,
               text=True
           )

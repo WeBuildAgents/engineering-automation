@@ -119,41 +119,58 @@ jobs:
           import re
           import textwrap
 
-          prompt = Path("automation/cursor/prompts/pr-review.md").read_text(encoding="utf-8")
-          files = Path("target-repo/tmp/changed-files.txt").read_text(encoding="utf-8", errors="ignore")
-          diff_ = Path("target-repo/tmp/pr.diff").read_text(encoding="utf-8", errors="ignore")
-          prior_review = Path("target-repo/tmp/prior-review.md").read_text(encoding="utf-8", errors="ignore").strip()
+          # Resolve absolute paths so cursor-agent finds them regardless of cwd.
+          # The driver prompt below references these files instead of embedding
+          # their contents inline. The agent reads them via tool calls (per
+          # https://cursor.com/docs/cli/headless#working-with-images and the
+          # documented file-path pattern). This keeps argv well under Linux's
+          # MAX_ARG_STRLEN (~128 KB) and removes the OSError [Errno 7] failure
+          # mode on large diffs / prompts.
+          prompt_path = Path("automation/cursor/prompts/pr-review.md").resolve()
+          files_path = Path("target-repo/tmp/changed-files.txt").resolve()
+          diff_path = Path("target-repo/tmp/pr.diff").resolve()
+          prior_review_path = Path("target-repo/tmp/prior-review.md").resolve()
+
+          # Read prior review only to decide whether to instruct a re-review.
+          prior_review_text = prior_review_path.read_text(encoding="utf-8", errors="ignore").strip()
 
           prior_section = ""
-          if prior_review:
-              prior_section = f"""
-          ---
-          PRIOR REVIEW CONTEXT (previous automated review for this PR):
+          if prior_review_text:
+              prior_section = textwrap.dedent(f"""
+                  Step 4. Read the prior automated review for this PR:
+                      {prior_review_path}
 
-          {prior_review}
+                  This is a re-review. Apply §10 of the review governance (Review iteration and closure rules):
+                  - Assess each finding from the prior review as resolved / partially resolved / unresolved.
+                  - Do not re-raise resolved findings as new findings.
+                  - Only flag genuinely new issues introduced since the prior review.
+              """).strip()
 
-          ---
-          This is a re-review. Apply §10 of the review governance (Review iteration and closure rules):
-          - Assess each finding from the prior review above as resolved / partially resolved / unresolved.
-          - Do not re-raise resolved findings as new findings.
-          - Only flag genuinely new issues introduced since the prior review.
-          ---
-          """
+          driver_prompt = textwrap.dedent(f"""
+              You are running an automated PR QA review.
 
-          full_prompt = f"""{prompt}
-          {prior_section}
-          Repository: ${{ github.repository }}
-          Pull Request: #${{ github.event.pull_request.number }}
+              Use file-reading tools to read the following files from disk, in order:
 
-          Changed files:
-          {files}
+              Step 1. Read the full review instructions and follow them strictly:
+                  {prompt_path}
 
-          Diff:
-          {diff_}
-          """
+              Step 2. Read the list of changed files in this PR:
+                  {files_path}
+
+              Step 3. Read the unified diff for this PR:
+                  {diff_path}
+
+              {prior_section}
+
+              Repository: ${{ github.repository }}
+              Pull Request: #${{ github.event.pull_request.number }}
+
+              Output ONLY the markdown review described by the instructions in step 1.
+              Do not include any preamble, raw HTML, or code fences wrapping the entire response.
+          """).strip()
 
           result = subprocess.run(
-              ["cursor-agent", "--trust", "-p", full_prompt],
+              ["cursor-agent", "--trust", "-p", driver_prompt],
               capture_output=True,
               text=True
           )
