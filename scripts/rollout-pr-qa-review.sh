@@ -58,18 +58,26 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Top-level permissions set the default for every job in this workflow.
+# Some org/repo policies force a restrictive default for GITHUB_TOKEN
+# (\`pull-requests: none\`); declaring the same permissions at the job level
+# anchors the scope for the reusable workflow call.
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
   qa-review:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ${ORG}/${AUTOMATION_REPO}/.github/workflows/reusable-pr-qa-review.yml@${AUTOMATION_WORKFLOW_REF}
     secrets: inherit
     with:
       slack_enabled: ${BASE_SLACK_ENABLED}
       slack_title: "PR QA Review"
-      max_diff_chars: 120000
+      # Inherits the reusable workflow default (400000) unless overridden.
+      max_diff_chars: 400000
       fail_on_block: true
 EOF
 }
@@ -87,18 +95,25 @@ on:
     branches:
       - '**'
 
+# The reusable workflow posts the review as a commit comment via
+# \`repos.createCommitComment\`, which requires \`contents: write\`.
+# Declare \`permissions:\` at both workflow and job level so restrictive
+# org/repo defaults cannot demote the scope to \`contents: read\`.
 permissions:
-  contents: read
+  contents: write
   pull-requests: read
 
 jobs:
   commit-review:
+    permissions:
+      contents: write
+      pull-requests: read
     uses: ${ORG}/${AUTOMATION_REPO}/.github/workflows/reusable-commit-qa-review.yml@${AUTOMATION_WORKFLOW_REF}
     secrets: inherit
     with:
       slack_enabled: ${BASE_SLACK_ENABLED}
       slack_title: "Commit QA Review"
-      max_diff_chars: 120000
+      max_diff_chars: 400000
       fail_on_block: false
       skip_if_pr_open: true
 EOF

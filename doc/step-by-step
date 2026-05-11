@@ -103,14 +103,26 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Some org/repo policies force `GITHUB_TOKEN` to `pull-requests: none` by
+# default; declare permissions at BOTH the workflow and the job level so the
+# reusable workflow inherits the scope it needs.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   qa-review:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: WeBuildAgents/engineering-automation/.github/workflows/reusable-pr-qa-review.yml@main
     secrets: inherit
     with:
       slack_enabled: true
       slack_title: "PR QA Review"
-      max_diff_chars: 120000
+      # Reusable workflow default is 400000; override only if you routinely
+      # review PRs significantly larger than that.
+      max_diff_chars: 400000
       fail_on_block: true
 Step 5: Commit and Push
 bashgit add .github/workflows/pr-qa-review.yml
@@ -187,7 +199,15 @@ yamlwith:
   fail_on_block: false  # ← Change to false (workflow will warn but not fail)
 Adjust Diff Size Limit
 yamlwith:
-  max_diff_chars: 200000  # ← Increase for larger PRs
+  max_diff_chars: 600000  # ← Increase for very large PRs (default: 400000)
+
+Notes:
+- Argv length is NOT the bottleneck — the diff is passed to cursor-agent via a
+  file path inside a short driver prompt, so this cap is only about token spend
+  and model focus, not Linux's MAX_ARG_STRLEN limit.
+- When the diff is clipped the workflow appends an explicit marker
+  (`[DIFF TRUNCATED]`) that instructs the reviewer agent to raise a HIGH-
+  severity coverage finding instead of silently approving the tail.
 Custom Slack Title
 yamlwith:
   slack_title: "OpenClaw PR Review"  # ← Custom title

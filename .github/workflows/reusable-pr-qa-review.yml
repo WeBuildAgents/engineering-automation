@@ -11,10 +11,22 @@ on:
         required: false
         type: string
         default: "PR QA Review"
+      # Soft cap on the size of the unified diff handed to the reviewer agent.
+      #
+      # The diff is now delivered to cursor-agent via a file path inside a
+      # short driver prompt (see "Run Cursor review" below), so argv length is
+      # not the bottleneck anymore. The cap exists only to (1) keep token
+      # spend predictable, (2) avoid overwhelming the model on multi-MB PRs.
+      #
+      # Default raised 2025-05 from 120 KB to 400 KB after the upstream argv
+      # refactor; callers can override per-pipeline if they routinely review
+      # very large PRs. When truncation happens the agent is instructed (via
+      # the appended marker) to flag the gap as a HIGH-severity coverage risk
+      # instead of silently approving the unreviewed tail of the diff.
       max_diff_chars:
         required: false
         type: number
-        default: 120000
+        default: 400000
       fail_on_block:
         required: false
         type: boolean
@@ -71,7 +83,17 @@ jobs:
           content = diff_path.read_text(encoding="utf-8", errors="ignore")
 
           if len(content) > max_chars:
-              content = content[:max_chars] + "\n\n[DIFF TRUNCATED]"
+              # Append an explicit instruction so the reviewer agent treats
+              # truncation as a coverage gap rather than ignoring the tail.
+              truncated_notice = (
+                  "\n\n[DIFF TRUNCATED]\n"
+                  f"# The diff was clipped at {max_chars} characters by the QA workflow.\n"
+                  "# The reviewer MUST raise a HIGH-severity finding under\n"
+                  "# 'Coverage Risk' stating that the tail of the diff was not\n"
+                  "# inspected, and downgrade Validation posture to 'weak'\n"
+                  "# unless full review is requested by a maintainer.\n"
+              )
+              content = content[:max_chars] + truncated_notice
 
           diff_path.write_text(content, encoding="utf-8")
           PY
