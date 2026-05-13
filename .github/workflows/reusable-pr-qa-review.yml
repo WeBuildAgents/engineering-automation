@@ -28,10 +28,15 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   qa-review:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
 
     steps:
       - name: Checkout target repo
@@ -91,7 +96,7 @@ jobs:
               }
             );
 
-            // Find the last bot comment that looks like a QA review (contains both marker sections).
+            // Find the last bot comment that looks like a QA review.
             const reviewComments = comments.filter(c =>
               c.body && c.body.includes('## Summary') && c.body.includes('## Recommendation')
             );
@@ -119,19 +124,67 @@ jobs:
           import re
           import textwrap
 
+          def write_debug_file(path: str, value: str) -> None:
+              Path(path).write_text(value or "", encoding="utf-8")
+
+          def required_heading_missing(output: str, required_headings: list[str]) -> list[str]:
+              """Validate markdown headings as exact heading lines, not substrings.
+
+              This avoids treating `## Recommendations` as if it satisfied
+              the final singular `## Recommendation` section.
+              """
+              missing = []
+              for heading in required_headings:
+                  pattern = rf"(?m)^\s*{re.escape(heading)}\s*$"
+                  if not re.search(pattern, output):
+                      missing.append(heading)
+              return missing
+
+          def fallback_review(reason: str, finding: str, description: str, recommendation: str, original_output: str = "") -> str:
+              original_section = ""
+              if original_output.strip():
+                  original_section = f"\n\nOriginal output:\n\n{original_output.strip()}"
+
+              return textwrap.dedent(f"""
+                  ## Summary
+                  - Change classification: UNKNOWN
+                  - Tier: UNKNOWN — automated review output could not be validated.
+                  - Scope: {reason}
+                  - Validation posture: weak
+                  - Execution gate: UNKNOWN
+                  - Full-scope coverage gate: UNKNOWN
+                  - Coverage phase: N/A
+
+                  ## Code Quality Report
+
+                  | Finding | Severity | Description | Recommendation |
+                  |---------|----------|-------------|----------------|
+                  | {finding} | BLOCKER | {description} | {recommendation} |
+
+                  - Score (0–10): 0
+                  - Gate result: Automated review output is invalid.
+
+                  ## Missing Tests
+                  - Unable to reliably determine because the automated review output was invalid.
+
+                  ## Coverage Risk
+                  Unknown. The review output did not satisfy the required format contract, so the validation posture cannot be trusted.
+
+                  ## Recommendations
+                  1. Inspect the uploaded artifacts: `qa-review-raw-output.md`, `qa-review-stderr.txt`, and `qa-review-missing-sections.txt`.
+                  2. Fix the prompt/output contract or Cursor execution issue that produced the invalid output.
+                  3. Re-run the PR QA review before accepting this PR.
+
+                  ## Recommendation
+                  BLOCK{original_section}
+              """).strip()
+
           # Resolve absolute paths so cursor-agent finds them regardless of cwd.
-          # The driver prompt below references these files instead of embedding
-          # their contents inline. The agent reads them via tool calls (per
-          # https://cursor.com/docs/cli/headless#working-with-images and the
-          # documented file-path pattern). This keeps argv well under Linux's
-          # MAX_ARG_STRLEN (~128 KB) and removes the OSError [Errno 7] failure
-          # mode on large diffs / prompts.
           prompt_path = Path("automation/cursor/prompts/pr-review.md").resolve()
           files_path = Path("target-repo/tmp/changed-files.txt").resolve()
           diff_path = Path("target-repo/tmp/pr.diff").resolve()
           prior_review_path = Path("target-repo/tmp/prior-review.md").resolve()
 
-          # Read prior review only to decide whether to instruct a re-review.
           prior_review_text = prior_review_path.read_text(encoding="utf-8", errors="ignore").strip()
 
           prior_section = ""
@@ -166,87 +219,57 @@ jobs:
               Pull Request: #${{ github.event.pull_request.number }}
 
               Output ONLY the markdown review described by the instructions in step 1.
-              Do not include any preamble, raw HTML, or code fences wrapping the entire response.
+              Do not include any preamble, raw HTML, JSON, or code fences wrapping the entire response.
+              The final section must be exactly:
+
+              ## Recommendation
+              APPROVE / NEEDS TESTS / BLOCK
           """).strip()
 
           result = subprocess.run(
               ["cursor-agent", "--trust", "-p", driver_prompt],
               capture_output=True,
-              text=True
+              text=True,
           )
 
           stdout = (result.stdout or "").strip()
           stderr = (result.stderr or "").strip()
-          output = stdout if stdout else stderr
 
-          if not output:
-              output = textwrap.dedent("""
-                  ## Summary
-                  - Change classification: UNKNOWN
-                  - Scope: Unable to determine because the automated review returned no output.
-                  - Validation posture: weak
-                  - Execution gate: UNKNOWN
-                  - Full-scope coverage gate: UNKNOWN
-                  - Coverage phase: N/A
+          write_debug_file("qa-review-raw-output.md", stdout)
+          write_debug_file("qa-review-stderr.txt", stderr)
+          write_debug_file("qa-review-return-code.txt", str(result.returncode))
 
-                  ## Code Quality Report
+          print(f"Cursor exit code: {result.returncode}")
+          print(f"Cursor stdout chars: {len(stdout)}")
+          print(f"Cursor stderr chars: {len(stderr)}")
 
-                  | Finding | Severity | Description | Recommendation |
-                  |---------|----------|-------------|----------------|
-                  | Empty review output | BLOCKER | Cursor returned no review output. | Re-run the review and validate the CI integration before accepting this PR. |
+          output = stdout
 
-                  - Score (0–10): 0
-                  - Gate result: Automated review failed.
-
-                  ## Missing Tests
-                  - Unable to determine because review output was empty.
-
-                  ## Coverage Risk
-                  Unknown. Automated review returned no usable output.
-
-                  ## Recommendations
-                  1. Re-run the automated review.
-                  2. Inspect Cursor CLI execution in CI.
-                  3. Do not approve the PR until a valid review is produced.
-
-                  ## Recommendation
-                  BLOCK
-              """).strip()
+          if result.returncode != 0 and not output:
+              output = fallback_review(
+                  reason="Cursor CLI exited with a non-zero status and produced no markdown review.",
+                  finding="Cursor execution failed",
+                  description="Cursor CLI did not produce a valid PR QA review.",
+                  recommendation="Inspect qa-review-stderr.txt and fix Cursor/API execution before accepting this PR.",
+                  original_output=stderr,
+              )
+          elif not output:
+              output = fallback_review(
+                  reason="Cursor CLI completed but returned no markdown review output.",
+                  finding="Empty review output",
+                  description="Cursor returned no review output.",
+                  recommendation="Re-run the review and validate the CI integration before accepting this PR.",
+              )
 
           lower = output.lower()
           if output.lstrip().startswith("<html") or "<head>" in lower or "<body" in lower:
-              output = textwrap.dedent("""
-                  ## Summary
-                  - Change classification: UNKNOWN
-                  - Scope: Automated review returned HTML instead of a QA review.
-                  - Validation posture: weak
-                  - Execution gate: UNKNOWN
-                  - Full-scope coverage gate: UNKNOWN
-                  - Coverage phase: N/A
-
-                  ## Code Quality Report
-
-                  | Finding | Severity | Description | Recommendation |
-                  |---------|----------|-------------|----------------|
-                  | Invalid output format | BLOCKER | The review returned raw HTML instead of the required markdown review. | Fix the prompt or output handling and rerun the review before accepting this PR. |
-
-                  - Score (0–10): 0
-                  - Gate result: Automated review output is invalid.
-
-                  ## Missing Tests
-                  - Unable to determine because the review output was invalid.
-
-                  ## Coverage Risk
-                  Unknown. Review output failed validation.
-
-                  ## Recommendations
-                  1. Fix the reviewer output format.
-                  2. Enforce markdown-only output in the prompt.
-                  3. Re-run the review before proceeding.
-
-                  ## Recommendation
-                  BLOCK
-              """).strip()
+              output = fallback_review(
+                  reason="Automated review returned HTML instead of a QA review.",
+                  finding="Invalid output format",
+                  description="The review returned raw HTML instead of the required markdown review.",
+                  recommendation="Fix the prompt or output handling and rerun the review before accepting this PR.",
+                  original_output=output,
+              )
 
           required = [
               "## Summary",
@@ -257,48 +280,29 @@ jobs:
               "## Recommendation",
           ]
 
-          if not all(section in output for section in required):
-              output = textwrap.dedent(f"""
-                  ## Summary
-                  - Change classification: UNKNOWN
-                  - Scope: Automated review completed, but the output format was invalid.
-                  - Validation posture: weak
-                  - Execution gate: UNKNOWN
-                  - Full-scope coverage gate: UNKNOWN
-                  - Coverage phase: N/A
+          missing = required_heading_missing(output, required)
+          write_debug_file(
+              "qa-review-missing-sections.txt",
+              "NONE" if not missing else "\n".join(missing),
+          )
 
-                  ## Code Quality Report
+          if missing:
+              print("Invalid review structure. Missing sections:")
+              for section in missing:
+                  print(f"- {section}")
 
-                  | Finding | Severity | Description | Recommendation |
-                  |---------|----------|-------------|----------------|
-                  | Invalid review structure | BLOCKER | The review did not include all required sections. | Fix the prompt/output contract and rerun the review before accepting this PR. |
-
-                  - Score (0–10): 0
-                  - Gate result: Automated review output is malformed.
-
-                  ## Missing Tests
-                  - Unable to reliably determine because the review structure was invalid.
-
-                  ## Coverage Risk
-                  Unknown. Output did not satisfy the required review format.
-
-                  ## Recommendations
-                  1. Fix the prompt so all required sections are always returned.
-                  2. Re-run the review.
-                  3. Do not approve the PR based on malformed output.
-
-                  ## Recommendation
-                  BLOCK
-
-                  Original output:
-
-                  {output}
-              """).strip()
+              output = fallback_review(
+                  reason="Automated review completed, but the output format was invalid.",
+                  finding="Invalid review structure",
+                  description=f"The review did not include all required sections. Missing: {', '.join(missing)}.",
+                  recommendation="Fix the prompt/output contract and rerun the review before accepting this PR.",
+                  original_output=output,
+              )
 
           match = re.search(
-              r"## Recommendation\s*\n\s*(APPROVE|NEEDS TESTS|BLOCK)\b",
+              r"(?m)^\s*## Recommendation\s*\n\s*(APPROVE|NEEDS TESTS|BLOCK)\b",
               output,
-              re.IGNORECASE
+              re.IGNORECASE,
           )
           recommendation = match.group(1).upper() if match else "BLOCK"
 
@@ -313,6 +317,10 @@ jobs:
           path: |
             qa-review.md
             qa-review-result.txt
+            qa-review-raw-output.md
+            qa-review-stderr.txt
+            qa-review-return-code.txt
+            qa-review-missing-sections.txt
 
       - name: Comment review on PR
         uses: actions/github-script@v7
